@@ -11,6 +11,7 @@ struct DashboardView: View {
         ScrollView {
             LazyVStack(spacing: 14) {
                 connectionHeader
+                accountRiskGuardCard
                 priceCard
                 accountCard
                 openPositionsSection
@@ -35,6 +36,73 @@ struct DashboardView: View {
     private var connectionHeader: some View {
         StatusPill(label: store.isConnected ? "Live" : "Offline", active: store.isConnected)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var accountRiskGuardCard: some View {
+        AppCard {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Account Risk Guard")
+                            .font(.headline)
+                        Text(riskGuardSubtitle)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.secondaryText)
+                    }
+
+                    Spacer()
+
+                    StatusPill(
+                        label: riskGuardStatusLabel,
+                        active: riskGuardStatusIsActive
+                    )
+                }
+
+                if let settings = store.tradingSettings {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Daily loss usage")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.secondaryText)
+                            Spacer()
+                            Text(dailyLossUsageText(settings))
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(dailyLossUsageTint(settings))
+                        }
+
+                        GeometryReader { proxy in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(AppTheme.surfaceRaised)
+                                Capsule()
+                                    .fill(dailyLossUsageTint(settings))
+                                    .frame(width: proxy.size.width * dailyLossUsageRatio(settings))
+                            }
+                        }
+                        .frame(height: 8)
+                    }
+
+                    HStack {
+                        MetricView(title: "Max daily loss", value: settings.maxDailyLossPercent.percentText, tint: AppTheme.warning)
+                        MetricView(title: "Risk / trade", value: settings.riskPerTradePercent.percentText)
+                        MetricView(title: "Max exposure", value: settings.maxExposurePercent.percentText)
+                    }
+
+                    HStack {
+                        MetricView(title: "Target margin", value: settings.targetMarginUsdt.currencyText)
+                        MetricView(title: "Target leverage", value: "\(settings.targetLeverage)x", tint: AppTheme.warning)
+                        MetricView(title: "Min confidence", value: settings.confidenceThreshold.percentText)
+                    }
+                } else {
+                    ContentUnavailableView(
+                        "Risk guard unavailable",
+                        systemImage: "shield.slash",
+                        description: Text("Connect to the backend to load risk settings.")
+                    )
+                    .frame(minHeight: 110)
+                }
+            }
+        }
     }
 
     private var priceCard: some View {
@@ -148,12 +216,12 @@ struct DashboardView: View {
                     }
                 }
                 Divider().overlay(AppTheme.border)
+                let protection = protectionLevels(for: position)
                 HStack {
                     MetricView(title: "Size", value: String(format: "%.5f BTC", abs(position.positionAmount)))
                     MetricView(title: "Entry", value: position.entryPrice.priceText)
                     MetricView(title: "Mark", value: position.markPrice.priceText)
                 }
-                let protection = protectionLevels(for: position)
                 HStack {
                     MetricView(
                         title: "Take profit",
@@ -165,14 +233,19 @@ struct DashboardView: View {
                         value: protection.stopLoss?.priceText ?? "—",
                         tint: AppTheme.negative
                     )
-                }
-                HStack {
-                    MetricView(title: "Notional", value: position.notional.currencyText)
                     MetricView(
                         title: "Liquidation",
                         value: position.liquidationPrice > 0 ? position.liquidationPrice.priceText : "—",
                         tint: AppTheme.warning
                     )
+                }
+                HStack {
+                    MetricView(title: "Margin", value: position.marginUsed.currencyText)
+                    MetricView(title: "Leverage", value: "\(Int(position.leverage))x", tint: AppTheme.warning)
+                    MetricView(title: "Notional", value: position.notional.currencyText)
+                }
+                HStack {
+                    Spacer(minLength: 0)
                     Button(role: .destructive) { selectedForClose = position } label: {
                         Text(isClosing ? "Closing..." : "Close")
                             .font(.subheadline.bold())
@@ -277,6 +350,57 @@ struct DashboardView: View {
         let takeProfit = activeOrders.first { $0.kind == "TakeProfit" }?.stopPrice
         let stopLoss = activeOrders.first { $0.kind == "StopMarket" }?.stopPrice
         return (takeProfit, stopLoss)
+    }
+
+    private var riskGuardStatusLabel: String {
+        if store.killSwitch?.enabled == true { return "STOPPED" }
+        guard let settings = store.tradingSettings else { return store.isConnected ? "LOADING" : "OFFLINE" }
+        if settings.paperTradingOnly { return "PAPER" }
+        return settings.autoTradingEnabled ? "ARMED" : "PAUSED"
+    }
+
+    private var riskGuardStatusIsActive: Bool {
+        guard store.killSwitch?.enabled != true else { return false }
+        guard let settings = store.tradingSettings else { return store.isConnected }
+        return settings.autoTradingEnabled
+    }
+
+    private var riskGuardSubtitle: String {
+        if store.killSwitch?.enabled == true {
+            return store.killSwitch?.message ?? "Kill switch is currently enabled."
+        }
+
+        guard let settings = store.tradingSettings else {
+            return store.isConnected ? "Loading risk limits from backend." : "Backend connection is offline."
+        }
+
+        if settings.paperTradingOnly {
+            return "Paper trading guard is active. Live orders are blocked."
+        }
+
+        return settings.autoTradingEnabled
+            ? "Auto trading is allowed within configured risk limits."
+            : "Auto trading is paused. Monitoring remains active."
+    }
+
+    private func dailyLossUsageRatio(_ settings: TradingSettings) -> Double {
+        guard let equity = store.overview?.walletBalance, equity > 0 else { return 0 }
+        let maxLoss = equity * settings.maxDailyLossPercent / 100
+        guard maxLoss > 0 else { return 0 }
+        let dailyLoss = max(0, -(store.overview?.dailyPnl ?? 0))
+        return min(dailyLoss / maxLoss, 1)
+    }
+
+    private func dailyLossUsageText(_ settings: TradingSettings) -> String {
+        let ratio = dailyLossUsageRatio(settings)
+        return (ratio * 100).percentText
+    }
+
+    private func dailyLossUsageTint(_ settings: TradingSettings) -> Color {
+        let ratio = dailyLossUsageRatio(settings)
+        if ratio >= 0.8 { return AppTheme.negative }
+        if ratio >= 0.5 { return AppTheme.warning }
+        return AppTheme.positive
     }
 
     private func hasRatcheted(_ snapshot: TrailingStopSnapshot) -> Bool {

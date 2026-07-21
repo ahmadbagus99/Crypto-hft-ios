@@ -188,6 +188,14 @@ struct FuturesPosition: Codable, Identifiable {
     var isOpen: Bool { abs(positionAmount) > 0.00000001 }
     var direction: String { positionAmount < 0 ? "SHORT" : "LONG" }
     var notional: Double { abs(positionAmount * markPrice) }
+    var marginUsed: Double {
+        if isolatedMargin > 0 {
+            return isolatedMargin
+        }
+
+        guard leverage > 0 else { return 0 }
+        return notional / leverage
+    }
     var pnlPercent: Double {
         guard entryPrice > 0 else { return 0 }
         let movement = (markPrice - entryPrice) / entryPrice * 100
