@@ -76,7 +76,24 @@ extension Double {
         return sign + currencyText
     }
 
-    var percentText: String { formatted(.number.precision(.fractionLength(2))) + "%" }
+    /// For values the backend already expresses in percent (55 → "55%", 47.368 → "47.37%").
+    var percentText: String {
+        let text = AppNumberFormatter.percent.string(from: NSNumber(value: self)) ?? String(format: "%.2f", self)
+        return text + "%"
+    }
+
+    /// For values the backend stores as a 0–1 ratio (0.15 → "15%", -0.0989 → "-9.9%").
+    var ratioPercentText: String { (self * 100).percentText }
+
+    /// Ratio rendered as a percentage with extra precision, for very small rates such as funding.
+    func ratioPercentText(fractionDigits: Int) -> String {
+        let text = (self * 100).formatted(
+            .number
+                .precision(.fractionLength(0...fractionDigits))
+                .locale(Locale(identifier: "en_US"))
+        )
+        return text + "%"
+    }
 
     var apiCostText: String {
         AppNumberFormatter.apiCost.string(from: NSNumber(value: self)) ?? String(format: "%.6f", self)
@@ -98,6 +115,19 @@ private enum AppNumberFormatter {
         formatter.groupingSeparator = ","
         formatter.decimalSeparator = "."
         formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return formatter
+    }()
+
+    /// Whole percentages stay whole ("15%"); fractional ones keep up to two digits ("47.37%").
+    static let percent: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = true
+        formatter.groupingSeparator = ","
+        formatter.decimalSeparator = "."
+        formatter.minimumFractionDigits = 0
         formatter.maximumFractionDigits = 2
         return formatter
     }()

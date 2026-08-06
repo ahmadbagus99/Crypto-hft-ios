@@ -12,6 +12,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func application(
         _ application: UIApplication,
+        supportedInterfaceOrientationsFor window: UIWindow?
+    ) -> UIInterfaceOrientationMask {
+        // Portrait everywhere except the full screen chart, which opts into landscape.
+        MainActor.assumeIsolated { OrientationLock.mask }
+    }
+
+    func application(
+        _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()

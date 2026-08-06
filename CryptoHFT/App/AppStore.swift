@@ -27,6 +27,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var historyPeriod = "month"
 
     let symbol = "BTCUSDT"
+    /// Deep enough history so the chart can be panned back several sessions.
+    private let chartCandleLimit = 500
     private var pollingTask: Task<Void, Never>?
     private static let baseURLKey = "backendBaseURL"
 
@@ -73,7 +75,7 @@ final class AppStore: ObservableObject {
         async let healthValue = try? api.health()
         async let overviewValue = try? api.overview()
         async let priceValue = try? api.markPrice(symbol: symbol)
-        async let candlesValue = try? api.klines(symbol: symbol, interval: chartInterval)
+        async let candlesValue = try? api.klines(symbol: symbol, interval: chartInterval, limit: chartCandleLimit)
         async let decisionValue = try? api.aiDecision(symbol: symbol)
         async let usageValue = try? api.aiUsage()
         async let walletsValue = try? api.wallets()
@@ -109,7 +111,7 @@ final class AppStore: ObservableObject {
     func changeInterval(_ interval: String) async {
         chartInterval = interval
         guard let api = APIClient(baseURLString: baseURL) else { return }
-        if let values = try? await api.klines(symbol: symbol, interval: interval) { klines = values }
+        if let values = try? await api.klines(symbol: symbol, interval: interval, limit: chartCandleLimit) { klines = values }
     }
 
     func changeHistoryPeriod(_ period: String) async {

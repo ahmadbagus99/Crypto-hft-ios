@@ -80,40 +80,7 @@ struct HistoryView: View {
                 }
 
                 if cumulativePoints.count > 1 {
-                    Chart {
-                        ForEach(cumulativePoints) { point in
-                            AreaMark(
-                                x: .value("Closed", point.date),
-                                y: .value("Cumulative PnL", point.value)
-                            )
-                            .foregroundStyle(
-                                LinearGradient(
-                                    colors: [AppTheme.accent.opacity(0.30), AppTheme.accent.opacity(0.02)],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-                            .interpolationMethod(.linear)
-
-                            LineMark(
-                                x: .value("Closed", point.date),
-                                y: .value("Cumulative PnL", point.value)
-                            )
-                            .foregroundStyle(AppTheme.accent)
-                            .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                            .interpolationMethod(.linear)
-                        }
-
-                        RuleMark(y: .value("Break even", 0))
-                            .foregroundStyle(Color.white.opacity(0.12))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    }
-                    .chartXAxis(.hidden)
-                    .chartYAxis(.hidden)
-                    .chartPlotStyle { plot in
-                        plot.background(AppTheme.background.opacity(0.18))
-                    }
-                    .frame(height: 180)
+                    pnlChart(total: total)
                 } else {
                     ContentUnavailableView(
                         "No realized PnL yet",
@@ -127,7 +94,7 @@ struct HistoryView: View {
                 HStack {
                     MetricView(
                         title: "Win rate",
-                        value: summary.map { ($0.winRate * 100).percentText } ?? "—"
+                        value: summary.map { $0.winRate.ratioPercentText } ?? "—"
                     )
                     MetricView(title: "Trades", value: summary.map { "\($0.totalTrades)" } ?? "—")
                     MetricView(
@@ -143,6 +110,92 @@ struct HistoryView: View {
                 }
             }
         }
+    }
+
+    /// Cumulative realized PnL after every closed trade, anchored on the break-even line so
+    /// the filled area reads as profit above zero and loss below it.
+    private func pnlChart(total: Double) -> some View {
+        let tint = total >= 0 ? AppTheme.positive : AppTheme.negative
+
+        return Chart {
+            ForEach(cumulativePoints) { point in
+                AreaMark(
+                    x: .value("Closed at", point.date),
+                    yStart: .value("Break even", 0),
+                    yEnd: .value("Cumulative PnL", point.value)
+                )
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [tint.opacity(0.32), tint.opacity(0.02)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .interpolationMethod(.linear)
+
+                LineMark(
+                    x: .value("Closed at", point.date),
+                    y: .value("Cumulative PnL", point.value)
+                )
+                .foregroundStyle(tint)
+                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                .interpolationMethod(.linear)
+            }
+
+            RuleMark(y: .value("Break even", 0))
+                .foregroundStyle(Color.white.opacity(0.22))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                .annotation(position: .top, alignment: .trailing, spacing: 1) {
+                    Text("Break even")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(AppTheme.secondaryText)
+                }
+        }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 4)) { value in
+                AxisGridLine().foregroundStyle(AppTheme.border)
+                AxisTick().foregroundStyle(AppTheme.border)
+                AxisValueLabel {
+                    if let date = value.as(Date.self) {
+                        Text(date.formatted(.dateTime.month(.abbreviated).day()))
+                    }
+                }
+                .foregroundStyle(AppTheme.secondaryText)
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) { value in
+                AxisGridLine().foregroundStyle(AppTheme.border)
+                AxisValueLabel {
+                    if let amount = value.as(Double.self) {
+                        Text(Self.axisAmountText(amount))
+                    }
+                }
+                .foregroundStyle(AppTheme.secondaryText)
+            }
+        }
+        .chartXAxisLabel(alignment: .center) {
+            Text("Trade close date")
+                .font(.caption2)
+                .foregroundStyle(AppTheme.secondaryText)
+        }
+        .chartYAxisLabel(position: .top, alignment: .leading) {
+            Text("Cumulative realized PnL (USDT)")
+                .font(.caption2)
+                .foregroundStyle(AppTheme.secondaryText)
+        }
+        .chartPlotStyle { plot in
+            plot.background(AppTheme.background.opacity(0.18))
+        }
+        .frame(height: 200)
+    }
+
+    private static func axisAmountText(_ value: Double) -> String {
+        value.formatted(
+            .number
+                .precision(.fractionLength(0...2))
+                .locale(Locale(identifier: "en_US"))
+        )
     }
 
     private var periodSelector: some View {
@@ -213,7 +266,7 @@ struct HistoryView: View {
                         Text(position.realizedPnl.signedCurrencyText)
                             .font(.title3.bold())
                             .foregroundStyle(position.realizedPnl >= 0 ? AppTheme.positive : AppTheme.negative)
-                        Text("ROI \(position.roi.percentText)")
+                        Text("ROI \(position.roi.ratioPercentText)")
                             .font(.caption)
                             .foregroundStyle(AppTheme.secondaryText)
                     }

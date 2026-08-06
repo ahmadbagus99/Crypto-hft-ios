@@ -4,7 +4,9 @@ Native SwiftUI client untuk backend `crypto-hft-btcusdt`.
 
 ## Fitur
 
-- Market BTCUSDT dengan candlestick multi-interval
+- Market BTCUSDT dengan candlestick multi-interval yang bisa digeser, di-zoom (pinch),
+  crosshair tekan-tahan, mode full screen landscape, plus garis entry/TP/SL/trailing stop
+  dan liquidation sesuai state engine backend
 - Account balance, posisi aktif, TP/SL, dan trailing stop
 - AI Decision, Claude validation, serta Claude API usage
 - History dengan chart realized PnL dan pagination 10 posisi per halaman

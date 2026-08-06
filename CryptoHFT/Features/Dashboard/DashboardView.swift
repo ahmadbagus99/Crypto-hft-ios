@@ -83,9 +83,9 @@ struct DashboardView: View {
                     }
 
                     HStack {
-                        MetricView(title: "Max daily loss", value: settings.maxDailyLossPercent.percentText, tint: AppTheme.warning)
-                        MetricView(title: "Risk / trade", value: settings.riskPerTradePercent.percentText)
-                        MetricView(title: "Max exposure", value: settings.maxExposurePercent.percentText)
+                        MetricView(title: "Max daily loss", value: settings.maxDailyLossPercent.ratioPercentText, tint: AppTheme.warning)
+                        MetricView(title: "Risk / trade", value: settings.riskPerTradePercent.ratioPercentText)
+                        MetricView(title: "Max exposure", value: settings.maxExposurePercent.ratioPercentText)
                     }
 
                     HStack {
@@ -120,29 +120,24 @@ struct DashboardView: View {
                     if let funding = store.markPrice?.fundingRate {
                         VStack(alignment: .trailing, spacing: 4) {
                             Text("Funding").font(.caption).foregroundStyle(AppTheme.secondaryText)
-                            Text((funding * 100).percentText)
+                            Text(funding.ratioPercentText(fractionDigits: 4))
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(funding >= 0 ? AppTheme.positive : AppTheme.negative)
                         }
                     }
                 }
 
-                Picker("Interval", selection: Binding(
-                    get: { store.chartInterval },
-                    set: { value in Task { await store.changeInterval(value) } }
-                )) {
-                    ForEach(intervals, id: \.self) { Text($0).tag($0) }
-                }
-                .pickerStyle(.segmented)
-
                 if store.klines.isEmpty {
                     ContentUnavailableView("No market data yet", systemImage: "chart.bar.xaxis")
                         .frame(height: 260)
                 } else {
-                    CandlestickChart(
+                    TradingChartCard(
+                        symbol: store.symbol,
                         candles: store.klines,
-                        markPrice: store.markPrice?.markPrice,
-                        interval: store.chartInterval
+                        levels: chartLevels,
+                        interval: store.chartInterval,
+                        intervals: intervals,
+                        onIntervalChange: { value in Task { await store.changeInterval(value) } }
                     )
                 }
 
@@ -339,6 +334,115 @@ struct DashboardView: View {
         }
     }
 
+    /// Price lines drawn on the chart. Everything here mirrors the engine state that the
+    /// backend reports: the live position, its reduce-only TP/SL orders, the trailing stop
+    /// ratchet and the liquidation price. When no position is open, the AI decision levels
+    /// are shown as planned (faded) lines instead.
+    private var chartLevels: [ChartPriceLevel] {
+        var result: [ChartPriceLevel] = []
+
+        if let mark = store.markPrice?.markPrice {
+            result.append(ChartPriceLevel(
+                id: "mark",
+                tag: "MARK",
+                title: "Mark price",
+                price: mark,
+                color: AppTheme.warning,
+                dash: .dotted
+            ))
+        }
+
+        if let position = store.openPositions.first {
+            let protection = protectionLevels(for: position)
+
+            result.append(ChartPriceLevel(
+                id: "entry",
+                tag: "ENTRY",
+                title: "Entry price",
+                price: position.entryPrice,
+                color: AppTheme.accent,
+                dash: .solid
+            ))
+
+            if let takeProfit = protection.takeProfit, takeProfit > 0 {
+                result.append(ChartPriceLevel(
+                    id: "tp",
+                    tag: "TP",
+                    title: "Take profit",
+                    price: takeProfit,
+                    color: AppTheme.positive
+                ))
+            }
+
+            if let stopLoss = protection.stopLoss, stopLoss > 0 {
+                result.append(ChartPriceLevel(
+                    id: "sl",
+                    tag: "SL",
+                    title: "Stop loss",
+                    price: stopLoss,
+                    color: AppTheme.negative
+                ))
+            }
+
+            if position.liquidationPrice > 0 {
+                result.append(ChartPriceLevel(
+                    id: "liq",
+                    tag: "LIQ",
+                    title: "Liquidation",
+                    price: position.liquidationPrice,
+                    color: AppTheme.negative.opacity(0.7),
+                    dash: .dotted
+                ))
+            }
+
+            if let trailing = store.trailingStop?.currentStopLoss,
+               trailing > 0,
+               abs(trailing - (protection.stopLoss ?? 0)) > 0.5 {
+                result.append(ChartPriceLevel(
+                    id: "tsl",
+                    tag: "TSL",
+                    title: "Trailing stop",
+                    price: trailing,
+                    color: AppTheme.warning
+                ))
+            }
+        } else if let decision = store.aiDecision, decision.shouldTrade, decision.entryPrice > 0 {
+            result.append(ChartPriceLevel(
+                id: "ai-entry",
+                tag: "AI ENTRY",
+                title: "Planned entry",
+                price: decision.entryPrice,
+                color: AppTheme.accent,
+                dash: .dashed,
+                isPlanned: true
+            ))
+
+            if decision.takeProfit > 0 {
+                result.append(ChartPriceLevel(
+                    id: "ai-tp",
+                    tag: "AI TP",
+                    title: "Planned take profit",
+                    price: decision.takeProfit,
+                    color: AppTheme.positive,
+                    isPlanned: true
+                ))
+            }
+
+            if decision.stopLoss > 0 {
+                result.append(ChartPriceLevel(
+                    id: "ai-sl",
+                    tag: "AI SL",
+                    title: "Planned stop loss",
+                    price: decision.stopLoss,
+                    color: AppTheme.negative,
+                    isPlanned: true
+                ))
+            }
+        }
+
+        return result
+    }
+
     private func protectionLevels(for position: FuturesPosition) -> (takeProfit: Double?, stopLoss: Double?) {
         let closingSide = position.positionAmount > 0 ? "Short" : "Long"
         let activeOrders = store.journalOrders?.orders.filter {
@@ -385,9 +489,11 @@ struct DashboardView: View {
 
     private func dailyLossUsageRatio(_ settings: TradingSettings) -> Double {
         guard let equity = store.overview?.walletBalance, equity > 0 else { return 0 }
-        let maxLoss = equity * settings.maxDailyLossPercent / 100
+        // maxDailyLossPercent is stored as a 0–1 ratio by the backend.
+        let maxLoss = equity * settings.maxDailyLossPercent
         guard maxLoss > 0 else { return 0 }
-        let dailyLoss = max(0, -(store.overview?.dailyPnl ?? 0))
+        // abs(min(...)) instead of max(0, -x) so a zero PnL cannot produce -0.
+        let dailyLoss = abs(min(store.overview?.dailyPnl ?? 0, 0))
         return min(dailyLoss / maxLoss, 1)
     }
 
@@ -414,144 +520,5 @@ struct DashboardView: View {
             _ = await store.close(position)
             isClosing = false
         }
-    }
-}
-
-private struct CandlestickChart: View {
-    let candles: [MarketKline]
-    let markPrice: Double?
-    let interval: String
-    @State private var selectedID: String?
-
-    private var visibleCandles: [MarketKline] { Array(candles.suffix(60)) }
-    private var selectedCandle: MarketKline? {
-        visibleCandles.first { $0.id == selectedID }
-    }
-    private var focusedCandle: MarketKline? { selectedCandle ?? visibleCandles.last }
-
-    private var priceDomain: ClosedRange<Double> {
-        var values = visibleCandles.flatMap { [$0.low, $0.high] }
-        if let markPrice { values.append(markPrice) }
-        guard let low = values.min(), let high = values.max() else { return 0...1 }
-        let padding = max((high - low) * 0.08, max(abs(high) * 0.0005, 1))
-        return (low - padding)...(high + padding)
-    }
-
-    var body: some View {
-        VStack(spacing: 10) {
-            if let candle = focusedCandle {
-                HStack(spacing: 8) {
-                    MetricView(title: "Open", value: candle.open.priceText)
-                    MetricView(title: "High", value: candle.high.priceText, tint: AppTheme.positive)
-                    MetricView(title: "Low", value: candle.low.priceText, tint: AppTheme.negative)
-                    MetricView(title: "Close", value: candle.close.priceText, tint: candle.isUp ? AppTheme.positive : AppTheme.negative)
-                }
-            }
-
-            Chart {
-                ForEach(visibleCandles) { candle in
-                    RuleMark(
-                        x: .value("Time", candle.date),
-                        yStart: .value("Low", candle.low),
-                        yEnd: .value("High", candle.high)
-                    )
-                    .foregroundStyle(candleColor(candle))
-                    .lineStyle(StrokeStyle(lineWidth: 1))
-
-                    RectangleMark(
-                        x: .value("Time", candle.date),
-                        yStart: .value("Open", min(candle.open, candle.close)),
-                        yEnd: .value("Close", max(candle.open, candle.close)),
-                        width: .fixed(4)
-                    )
-                    .foregroundStyle(candleColor(candle))
-                }
-
-                if let markPrice {
-                    RuleMark(y: .value("Mark price", markPrice))
-                        .foregroundStyle(AppTheme.warning.opacity(0.75))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                }
-
-                if let selectedCandle {
-                    RuleMark(x: .value("Selected", selectedCandle.date))
-                        .foregroundStyle(Color.white.opacity(0.34))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                }
-            }
-            .chartYScale(domain: priceDomain)
-            .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 4)) { value in
-                    AxisGridLine().foregroundStyle(AppTheme.border)
-                    AxisValueLabel {
-                        if let date = value.as(Date.self) {
-                            Text(axisLabel(date))
-                        }
-                    }
-                    .foregroundStyle(AppTheme.secondaryText)
-                }
-            }
-            .chartYAxis {
-                AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) { value in
-                    AxisGridLine().foregroundStyle(AppTheme.border)
-                    AxisValueLabel {
-                        if let price = value.as(Double.self) {
-                            Text(price.formatted(.number.notation(.compactName).precision(.fractionLength(1))))
-                        }
-                    }
-                    .foregroundStyle(AppTheme.secondaryText)
-                }
-            }
-            .chartPlotStyle { plot in
-                plot
-                    .background(AppTheme.background.opacity(0.34))
-                    .border(AppTheme.border)
-            }
-            .chartOverlay { proxy in
-                GeometryReader { geometry in
-                    Rectangle()
-                        .fill(.clear)
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 0)
-                                .onChanged { value in selectCandle(at: value.location, proxy: proxy, geometry: geometry) }
-                                .onEnded { _ in selectedID = nil }
-                        )
-                }
-            }
-            .frame(height: 250)
-
-            HStack {
-                Label("Drag the chart to inspect OHLC", systemImage: "hand.draw")
-                Spacer()
-                if let candle = focusedCandle {
-                    Text(candle.date.formatted(date: .abbreviated, time: .shortened))
-                }
-            }
-            .font(.caption2)
-            .foregroundStyle(AppTheme.secondaryText)
-        }
-    }
-
-    private func candleColor(_ candle: MarketKline) -> Color {
-        candle.isUp ? AppTheme.positive : AppTheme.negative
-    }
-
-    private func axisLabel(_ date: Date) -> String {
-        if interval == "1d" {
-            return date.formatted(.dateTime.month(.abbreviated).day())
-        }
-        return date.formatted(.dateTime.hour().minute())
-    }
-
-    private func selectCandle(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy) {
-        guard let plotFrame = proxy.plotFrame else { return }
-        let frame = geometry[plotFrame]
-        guard frame.contains(location) else { return }
-        let plotX = location.x - frame.origin.x
-        guard let date: Date = proxy.value(atX: plotX) else { return }
-        selectedID = visibleCandles.min {
-            abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date))
-        }?.id
     }
 }
